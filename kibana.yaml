@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana
+  namespace: logs
+  labels:
+    app: kibana
+spec:
+  ports:
+    - port: 5601
+      name: http
+  clusterIP: None
+  selector:
+    app: kibana
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kibana-cfg
+  namespace: logs
+  labels:
+    app: kibana
+data:
+  "ELASTICSEARCH_HOSTS": "http://localhost:9200"
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-coordinator-cfg
+  namespace: logs
+  labels:
+    app: kibana
+data:
+  "ES_JAVA_OPTS": "-Xms256m -Xmx256m"
+  "cluster.name": "elasticsearch-cluster"
+  "node.master": "false"
+  "node.data": "false"
+  "node.ingest": "false"
+  "discovery.seed_hosts": "elasticsearch-discovery"
+  "cluster.initial_master_nodes": "elasticsearch-0,elasticsearch-1,elasticsearch-2"
+
+---
+
+apiVersion: apps/v1
+kind: Deployment # Lets use plain old deployment for kibana
+metadata:
+  name: kibana
+  namespace: logs
+  labels:
+    app: kibana
+spec:
+  selector:
+    matchLabels:
+      app: kibana
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: kibana
+    spec:
+      containers:
+        # Shiny new 7.0 kibana
+        - name: kibana
+          image: "docker.elastic.co/kibana/kibana-oss:7.0.0" 
+          ports:
+            - containerPort: 5601
+              name: http
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: kibana-cfg
+        - name: es-coordinator
+          image: "docker.elastic.co/elasticsearch/elasticsearch-oss:7.0.0"
+          env:
+            - name: "namespace"
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: "node.name"
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          envFrom:
+            - configMapRef:
+                name: elasticsearch-coordinator-cfg
+          ports:
+            - containerPort: 9200
+              name: http
+              protocol: TCP
+            - containerPort: 9300
+              name: transport
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: transport
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          securityContext:
+            capabilities:
+              add:
+                - IPC_LOCK
+                - SYS_RESOURCE
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "512Mi"
+            limits:
+              cpu: "600m"  # Overprovision for burstable speed in local setup
+              memory: "512Mi"
+

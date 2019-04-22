@@ -1,0 +1,143 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logs
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: logs
+  labels:
+    app: elasticsearch
+spec:
+  ports:
+    - port: 9200
+      name: http
+  clusterIP: None
+  selector:
+    app: elasticsearch
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-discovery
+  namespace: logs
+  labels:
+    app: elasticsearch
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  clusterIP: None
+  selector:
+    app: elasticsearch
+  ports:
+    - name: transport
+      port: 9300
+      protocol: TCP
+  publishNotReadyAddresses: true
+  sessionAffinity: None
+  type: ClusterIP
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-cfg
+  namespace: logs
+data:
+  # Swapping should be disabled on kubernetes nodes, if not, use memory_lock and update limits
+  #"bootstrap.memory_lock": "true"
+  "ES_JAVA_OPTS": "-Xms256m -Xmx256m"
+  "cluster.name": "elasticsearch-cluster"
+  #"discovery.service": "elasticsearch-discovery"
+  "discovery.zen.minimum_master_nodes": "2"
+  "discovery.seed_hosts": "elasticsearch-discovery"
+  "cluster.initial_master_nodes": "elasticsearch-0,elasticsearch-1,elasticsearch-2"
+  #"xpack.license.self_generated.type": "basic"
+  #"xpack.security.enabled": "false"
+  #"xpack.monitoring.enabled": "false"
+
+---
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  namespace: logs
+spec:
+  selector:
+    matchLabels:
+      app: elasticsearch
+  serviceName: elasticsearch
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      initContainers:
+        # Suggested kernel settings to run in privileged mode
+        - name: sysctl
+          image: busybox
+          command: [ "sysctl", "-w", "vm.max_map_count=262144"]
+          securityContext:
+            privileged: true
+
+      containers:
+        - name: es
+          image: "docker.elastic.co/elasticsearch/elasticsearch-oss:7.0.0"
+          env:
+            - name: "namespace"
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: "node.name"
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          envFrom:
+            - configMapRef:
+                name: elasticsearch-cfg
+
+          ports:
+            - containerPort: 9200
+              name: http
+              protocol: TCP
+            - containerPort: 9300
+              name: transport
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: transport
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+          securityContext:
+            capabilities:
+              add:
+                - IPC_LOCK
+                - SYS_RESOURCE
+          resources:     # These are low for any real usage, but I'm testing this
+            requests:    # with docker-for-mac with limited resources
+              cpu: "100m"
+              memory: "1024Mi"
+            limits:
+              cpu: "600m"  # Overprovision for burstable speed in local setup
+              memory: "1024Mi"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: "my-ssd-storage"
+        resources:
+          requests:
+            storage: 5Gi
