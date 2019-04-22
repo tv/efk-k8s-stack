@@ -1,0 +1,76 @@
+# Note: Curator does not yet support elasticsearch 7.0, so this is here just
+# for placeholder to be easily enabled when it does.
+#
+# Ref: https://github.com/elastic/curator/issues/1380
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: curator-cfg
+  namespace: logs
+  labels:
+    app: curator
+data:
+  action.yaml: |
+    actions:
+      1:
+        action: delete_indices
+        description: "Delete log indices older than x days"
+        options:
+          ignore_empty_list: True
+        filters:
+          - filtertype: pattern
+            kind: prefix
+            value: filebeat-
+          - filtertype: age
+            source: name
+            direction: older
+            timestring: '%Y.%m.%d'
+            unit: days
+            unit_count: 2 # This should be definitely increased in real environments
+
+
+  curator.yaml: |
+    client:
+      hosts: "elasticsearch"
+      port: 9200
+      use_ssl: False
+
+
+---
+
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: curator
+  namespace: logs
+  labels:
+    app: curator
+spec:
+  schedule: "2 0 * * *"
+  concurrencyPolicy: "Forbid"
+  jobTemplate:
+    metadata:
+      labels:
+        app: curator
+    spec:
+      template:
+        metadata:
+          labels:
+            app: curator
+        spec:
+          restartPolicy: "Never"
+          containers:
+            - name: curator
+              image: "bobrik/curator:5.6.0" # No official elastic curator image
+              args:
+                - --config
+                - /etc/curator/curator.yaml
+                - /etc/curator/action.yaml
+              volumeMounts:
+                - name: curator
+                  mountPath: /etc/curator
+          volumes:
+            - name: curator
+              configMap:
+                name: curator-cfg
